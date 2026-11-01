@@ -29,6 +29,8 @@ MAX_CAMBER_POSITION = 0.4;      // [0.2:0.05:0.7]
 ANGLE_OF_ATTACK = -0.0;          // [-2:0.25:2]
 // (Affects sweep, fraction of local chord from leading edge)
 REFERENCE_LINE = 0.4;           // [0:0.05:2]
+// (Shape: 1 = trapezoid, 2 = ellipse, experiment!)
+PLAN_FORM_EXPONENT = 2.0;       // [1:0.2:10]
 // (mm)
 DROOP = 3;                      // [-10:0.5:10]
 // (degrees)
@@ -52,6 +54,7 @@ rotate([0, -90, 0]) rotate([0, 0, -20])
         max_camber_position = MAX_CAMBER_POSITION,
         angle_of_attack = ANGLE_OF_ATTACK,
         reference_line = REFERENCE_LINE,
+        plan_form_exponent = PLAN_FORM_EXPONENT,
         droop = DROOP,
         twist = TWIST,
 
@@ -230,9 +233,9 @@ module tail(
     max_camber_position     = 0.4,
     angle_of_attack         = 0.0,
     reference_line          = 0.4,
+    plan_form_exponent      = 2,
     droop                   = 3,
     twist                   = 0,
-    plan_form               = "elliptical",
     show_text               = true,
     text_size               = 3,
     text_depth              = 0.5,
@@ -268,19 +271,19 @@ module tail(
     mean_thickness = polygon_area(foil_profile);
     square_profile = [[1, -mean_thickness/2],[0, -mean_thickness/2], [0, mean_thickness/2], [1, mean_thickness/2]];
 
-    tip_a = acos(min(tip_chord, 0.8 * root_chord)/root_chord);
+    tip_a = acos((min(tip_chord, 0.8 * root_chord)/root_chord)^(plan_form_exponent/2));
 
     // Compute the foil sections
     section_count = 21;
     sections = [for (i = [section_count:-1:-section_count])
         let (
             a = tip_a * i / section_count,
-            s = sin(a) / sin(tip_a),
+            s = sign(a) * (abs(sin(a)) / sin(tip_a)) ^ (2/plan_form_exponent),
             c = sqrt(max(0, 1 - s*s))
         )
         [
             s * span/2,
-            cos(a) * root_chord,
+            cos(a)^(2/plan_form_exponent) * root_chord,
             reference_line,
             angle_of_attack + (1-c) * twist,
             (1-c) * -droop,
