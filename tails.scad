@@ -23,6 +23,8 @@ MAX_THICKNESS = 0.1;            // [0.04:0.005:0.2]
 MAX_CAMBER = 0.02;              // [0.0:0.005:0.1]
 // (Fraction of local chord from leading edge)
 MAX_CAMBER_POSITION = 0.4;      // [0.2:0.05:0.7]
+// (Degrees. Negative pushes the tail down)
+ANGLE_OF_ATTACK = -0.0;          // [-2:0.25:2]
 // (Affects sweep, fraction of local chord from leading edge)
 REFERENCE_LINE = 0.4;           // [0:0.05:2]
 // (mm)
@@ -45,6 +47,7 @@ rotate([0, -90, 0]) rotate([0, 0, -20])
         max_thickness = MAX_THICKNESS,
         max_camber = MAX_CAMBER,
         max_camber_position = MAX_CAMBER_POSITION,
+        angle_of_attack = ANGLE_OF_ATTACK,
         reference_line = REFERENCE_LINE,
         droop = DROOP,
         twist = TWIST,
@@ -192,13 +195,20 @@ function wing_surfaces(y, foil_profile, chord, centre, twist, washdown) =
 
 //-------------------------------------------------------------------------------------------------
 
-module tail_screw_hole(y, size, foil_profile, parameters) {
+module tail_screw_hole(y, size, foil_profile, parameters, mount_web) {
     info = screw_info(size, head="flat");
     head_d = struct_val(info, "head_size_sharp");
     head_r = head_d / 2;
     root_chord = struct_val(parameters, "root_chord");
     reference_line = struct_val(parameters, "reference_line");
-    z = min(0, min([for (y1 = [y - head_r: 0.5: y + head_r]) wing_surfaces(y1, foil_profile, root_chord, reference_line, 0, 0)[0]]));
+    angle_of_attack = struct_val(parameters, "angle_of_attack");
+    z = min(0, min([for (y1 = [y - head_r: 0.5: y + head_r])
+        min(
+            wing_surfaces(y1, foil_profile, root_chord, reference_line, angle_of_attack, 0)[0],
+            let (zs = [for (seg = polygon_line_intersection(mount_web, [[y1, -100], [y1, 100]])) for (p = seg) p.y])
+                zs == [] ? 0 : -max(zs)
+        )
+    ]));
     right(y) fwd(z) rotate([-90,0,0])
         screw_hole(size, head="flat", length=20, counterbore=1.5, head_oversize=-1, anchor="top");
 }
@@ -214,6 +224,7 @@ module tail(
     max_thickness           = 0.1,
     max_camber              = 0.02,
     max_camber_position     = 0.4,
+    angle_of_attack         = 0.0,
     reference_line          = 0.4,
     droop                   = 3,
     twist                   = 0,
@@ -240,6 +251,7 @@ module tail(
         ["max_thickness",       max_thickness],
         ["max_camber",          max_camber],
         ["max_camber_position", max_camber_position],
+        ["angle_of_attack",     angle_of_attack],
         ["reference_line",      reference_line],
         ["point_count",         point_count]
     ];
@@ -274,14 +286,20 @@ module tail(
         sin(a) * span/2,
         plan_form == "rect" ? area/span : cos(a) * root_chord,
         reference_line,
-        (1-cos(a)) * twist,
+        angle_of_attack + (1-cos(a)) * twist,
         (1-cos(a)) * -droop,
         ]];
 
+    // If the angle of attack puts the trailing edge above the mount, we need to reach up to it.
+    mount_web = concat(
+        [for (x = [0:0.5:root_chord-0.1])
+            let (s = -wing_surfaces(x, foil_profile, root_chord, reference_line, angle_of_attack, 0)[1])
+            [x, s > 0 ? s + 0.05 : 0]],
+        [[max([for (p = mount_profile) p[0]]), -0.1], [0, -0.1]]);
 
     module simple_tail() {
         intersection() {
-            down(15) linear_extrude(height=30) polygon(mount_profile);
+            down(15) linear_extrude(height=30) union() { polygon(mount_profile); polygon(mount_web); }
             rotate([-90,0,0]) down(50) linear_extrude(height=100) polygon(mount_plan);
         }
         translate([reference_line*root_chord, 0, 0]) rotate([180,0,0])
@@ -294,16 +312,17 @@ module tail(
         for (hole = struct_val(MOUNT_INFO, "screw_holes")) {
             y = struct_val(hole, "location");
             size = struct_val(hole, "size");
-            tail_screw_hole(y, size, foil_profile, foil_parameters);
+            tail_screw_hole(y, size, foil_profile, foil_parameters, mount_web);
         }
 
         if (show_text) {
             difference() {
                 union() {
-                    translate([48, 0, 4.5])  foil_text(str(round(span), "x", round(root_chord)));
-                    translate([48, 0, 0])    foil_text(str(round(area/100), " cm\u00b2"));
-                    translate([48, 0, -4.5]) foil_text(str("AR ", round(aspect_ratio*10)/10));
-                    translate([80, 0, 0])    foil_text(foil_name);
+                    translate([48, 0, 6])   foil_text(str(round(span), "x", round(root_chord)));
+                    translate([48, 0, 2])   foil_text(str(round(area/100), " cm\u00b2"));
+                    translate([48, 0, -2])  foil_text(str("AR ", round(aspect_ratio*10)/10));
+                    translate([48, 0, -6])  foil_text(str("AoA ", round(angle_of_attack*100)/100, "\u00b0"));
+                    translate([80, 0, 0])   foil_text(foil_name);
                 }
                 translate([0, -text_depth, 0]) simple_tail();
             }

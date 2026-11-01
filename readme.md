@@ -9,7 +9,7 @@ I was pretty happy when I found out I was wrong.
 
 The tails have 4-digit NACA profiles and are Axis-compatible (see Contributing below!).
 
-You can adjust foil span, root chord, thickness, camber and maximum camber location, sweep, droop and twist.
+You can adjust foil span, root chord, thickness, camber and maximum camber location, angle of attack, sweep, droop and twist.
 At some stage I'll get to implementing planforms other than elliptical,
 and maybe some more exotic foil profiles.
 
