@@ -168,73 +168,37 @@ naca_name = function(parameters)
 FOILS = [
     ["NACA-4", [
         ["name", naca_name],
-        ["profile", naca_profile],
-        ["top", naca_top],
-        ["bottom", naca_bottom],
+        ["profile", naca_profile]
     ]]
 ];
 
 
 //-------------------------------------------------------------------------------------------------
 
-function wing_vnf(airfoil, sections) =
-    let (points = [for (i = [0:len(sections)-1])
-        let (span = sections[i][0], chord = sections[i][1], centre=sections[i][2], twist=sections[i][3], washdown=sections[i][4])
-            [for (p = move([0, -washdown, 0], scale(chord, zrot(twist, move([-centre, 0, 0], airfoil)))))
-                point3d(p, span)]])
-    skin(points, slices=0, caps=true);
+function wing_section(foil_profile, chord, centre, twist, washdown) =
+    move([0, -washdown], scale(chord, zrot(twist, move([-centre, 0], foil_profile))));
 
+function wing_vnf(foil_profile, sections) =
+    skin([for (s = sections) path3d(wing_section(foil_profile, s[1], s[2], s[3], s[4]), s[0])],
+         slices=0, caps=true);
 
-//-------------------------------------------------------------------------------------------------
-
-function wing_pos(x, y, parameters) =
-    let (span = struct_val(parameters, "span"))
-    (abs(x) > span / 2) ? [1, 0] :
-        let (
-            root_chord = struct_val(parameters, "root_chord"),
-            reference_line = struct_val(parameters, "reference_line"),
-            a = asin(2 * x / span),
-            chord = cos(a) * root_chord,
-            baseline = root_chord * reference_line,
-            leading_edge = baseline - reference_line * chord,
-            trailing_edge = baseline + (1 - reference_line) * chord
+function wing_surfaces(y, foil_profile, chord, centre, twist, washdown) =
+    let (
+        root_section = move([centre * chord, 0], wing_section(foil_profile, chord, centre, twist, washdown)),
+        zs = [for (seg = polygon_line_intersection(root_section, [[y, -100], [y, 100]])) for (p = seg) p.y]
         )
-        (y < leading_edge || y > trailing_edge) ? [1, 0]:
-            [chord, (y - leading_edge) / chord]
-;
-
-function wing_top(x, y, foil, parameters) =
-    let (
-        pos = wing_pos(x, y, parameters),
-        chord = pos[0],
-        alpha = pos[1]
-    )
-    (alpha == 0) ? [0,0] :
-        (struct_val(foil, "top"))(alpha, parameters) * chord
-;
-
-function wing_bottom(x, y, foil, parameters) =
-    let (
-        pos = wing_pos(x, y, parameters),
-        chord = pos[0],
-        alpha = pos[1]
-    )
-    (alpha == 0) ? [0,0] :
-        (struct_val(foil, "bottom"))(alpha, parameters) * chord
-;
+        zs == [] ? [0,0] : [min(zs), max(zs)];
 
 
 //-------------------------------------------------------------------------------------------------
 
-module tail_screw_hole(y, size, foil, parameters) {
+module tail_screw_hole(y, size, foil_profile, parameters) {
     info = screw_info(size, head="flat");
     head_d = struct_val(info, "head_size_sharp");
     head_r = head_d / 2;
-    z = min(
-        wing_bottom(0, y - head_r, foil, parameters)[1],
-        wing_bottom(0, y, foil, parameters)[1],
-        wing_bottom(0, y + head_r, foil, parameters)[1]
-    );
+    root_chord = struct_val(parameters, "root_chord");
+    reference_line = struct_val(parameters, "reference_line");
+    z = min(0, min([for (y1 = [y - head_r: 0.5: y + head_r]) wing_surfaces(y1, foil_profile, root_chord, reference_line, 0, 0)[0]]));
     right(y) fwd(z) rotate([-90,0,0])
         screw_hole(size, head="flat", length=20, counterbore=1.5, head_oversize=-1, anchor="top");
 }
@@ -272,7 +236,6 @@ module tail(
     FOIL_INFO = (struct_val(FOILS, foil_family));
 
     foil_parameters = [
-        ["span",                span],
         ["root_chord",          root_chord],
         ["max_thickness",       max_thickness],
         ["max_camber",          max_camber],
@@ -284,7 +247,6 @@ module tail(
     foil_name = (struct_val(FOIL_INFO, "name"))(foil_parameters);
     //foil_name = "RECT";
     foil_profile = (struct_val(FOIL_INFO, "profile"))(foil_parameters);
-    foil_bottom = struct_val(FOIL_INFO, "bottom");
 
     // Figure out some foil parameters
     mean_thickness = polygon_area(foil_profile);
@@ -332,7 +294,7 @@ module tail(
         for (hole = struct_val(MOUNT_INFO, "screw_holes")) {
             y = struct_val(hole, "location");
             size = struct_val(hole, "size");
-            tail_screw_hole(y, size, FOIL_INFO, foil_parameters);
+            tail_screw_hole(y, size, foil_profile, foil_parameters);
         }
 
         if (show_text) {
