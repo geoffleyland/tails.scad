@@ -26,7 +26,7 @@ MAX_CAMBER = 0.02;              // [0.0:0.005:0.1]
 // (Fraction of local chord from leading edge)
 MAX_CAMBER_POSITION = 0.4;      // [0.2:0.05:0.7]
 // (Degrees. Negative pushes the tail down)
-ANGLE_OF_ATTACK = -0.0;          // [-2:0.25:2]
+ANGLE_OF_ATTACK = 0.0;          // [-2:0.25:2]
 // (Affects sweep, fraction of local chord from leading edge)
 REFERENCE_LINE = 0.4;           // [0:0.05:2]
 // (Shape: 1 = trapezoid, 2 = ellipse, experiment!)
@@ -121,7 +121,7 @@ function naca_half_thickness(x, max_thickness) =
         NACA_A3 * x^3 +
         NACA_A4 * x^4);
 
-naca_top = function(x, parameters)
+naca_point = function(x, parameters, side)
     let (
         max_camber = struct_val(parameters, "max_camber"),
         max_camber_position = struct_val(parameters, "max_camber_position"),
@@ -133,34 +133,17 @@ naca_top = function(x, parameters)
         camber_gradient = naca_camber_gradient(x, max_camber, max_camber_position),
         theta = atan(camber_gradient)
     )
-    [x - half_thickness * sin(theta), camber + half_thickness * cos(theta)];
+    [x - side * half_thickness * sin(theta), camber + side * half_thickness * cos(theta)];
 
-naca_bottom = function(x, parameters)
+naca_surfaces = function(parameters)
     let (
-        max_camber = struct_val(parameters, "max_camber"),
-        max_camber_position = struct_val(parameters, "max_camber_position"),
-        max_thickness = struct_val(parameters, "max_thickness")
+        n = floor(struct_val(parameters, "point_count") / 2),
+        xs = [for (i = [0 : n-1]) (1 - cos(180 * i / (n-1))) / 2]
     )
-    let (
-        half_thickness = naca_half_thickness(x, max_thickness),
-        camber = naca_camber(x, max_camber, max_camber_position),
-        camber_gradient = naca_camber_gradient(x, max_camber, max_camber_position),
-        theta = atan(camber_gradient)
-    )
-    [x + half_thickness * sin(theta), camber - half_thickness * cos(theta)];
-
-
-naca_profile = function(parameters)
-    let (
-        point_count = struct_val(parameters, "point_count")
-    )
-    let (step = 180 / (point_count / 2 - 1))
-    concat(
-        [for (beta = [180:-step:0]) let (x = (1 - cos(beta)) / 2)
-            naca_top(x, parameters)],
-        [for (beta = [step:step:180]) let (x = (1 - cos(beta)) / 2)
-            naca_bottom(x, parameters)]
-    );
+    [
+        [for (x = xs) naca_point(x, parameters,  1)],
+        [for (x = xs) naca_point(x, parameters, -1)]
+    ];
 
 
 naca_name = function(parameters)
@@ -177,23 +160,22 @@ naca_name = function(parameters)
 FOILS = [
     ["NACA-4", [
         ["name", naca_name],
-        ["profile", naca_profile]
+        ["surfaces", naca_surfaces]
     ]]
 ];
 
 
 //-------------------------------------------------------------------------------------------------
 
-function wing_section(foil_profile, chord, centre, twist, washdown) =
-    move([0, -washdown], scale(chord, zrot(twist, move([-centre, 0], foil_profile))));
+function join_surfaces(surfaces) =
+    concat(reverse(surfaces[0]), [for (i = [1 : len(surfaces[1]) - 1]) surfaces[1][i]]);
 
-function wing_vnf(foil_profile, sections) =
-    skin([for (s = sections) path3d(wing_section(foil_profile, s[1], s[2], s[3], s[4]), s[0])],
-         slices=0, caps=true);
+function wing_section(foil_surfaces, chord, centre, twist, droop) =
+    move([0, droop], scale(chord, zrot(twist, move([-centre, 0], join_surfaces(foil_surfaces)))));
 
-function wing_surfaces(y, foil_profile, chord, centre, twist, washdown) =
+function wing_surfaces(y, foil_surfaces, chord, centre, twist, droop) =
     let (
-        root_section = move([centre * chord, 0], wing_section(foil_profile, chord, centre, twist, washdown)),
+        root_section = move([centre * chord, 0], wing_section(foil_surfaces, chord, centre, twist, droop)),
         zs = [for (seg = polygon_line_intersection(root_section, [[y, -100], [y, 100]])) for (p = seg) p.y]
         )
         zs == [] ? [0,0] : [min(zs), max(zs)];
@@ -201,7 +183,7 @@ function wing_surfaces(y, foil_profile, chord, centre, twist, washdown) =
 
 //-------------------------------------------------------------------------------------------------
 
-module tail_screw_hole(y, size, foil_profile, parameters, mount_web) {
+module tail_screw_hole(y, size, foil_surfaces, parameters, mount_web) {
     info = screw_info(size, head="flat");
     head_d = struct_val(info, "head_size_sharp");
     head_r = head_d / 2;
@@ -210,7 +192,7 @@ module tail_screw_hole(y, size, foil_profile, parameters, mount_web) {
     angle_of_attack = struct_val(parameters, "angle_of_attack");
     z = min(0, min([for (y1 = [y - head_r: 0.5: y + head_r])
         min(
-            wing_surfaces(y1, foil_profile, root_chord, reference_line, angle_of_attack, 0)[0],
+            wing_surfaces(y1, foil_surfaces, root_chord, reference_line, angle_of_attack, 0)[0],
             let (zs = [for (seg = polygon_line_intersection(mount_web, [[y1, -100], [y1, 100]])) for (p = seg) p.y])
                 zs == [] ? 0 : -max(zs)
         )
@@ -246,8 +228,7 @@ module tail(
     MOUNT_INFO = struct_val(MOUNTS, mount);
     mount_profile = smooth_path(struct_val(MOUNT_INFO, "profile"), method="corners", relsize=1);
     mount_half_plan = struct_val(MOUNT_INFO, "half_plan");
-    n = len(mount_half_plan);
-    mount_plan_points = concat(mount_half_plan, [for (i = [n-1:-1:0]) [mount_half_plan[i][0], -mount_half_plan[i][1]]]);
+    mount_plan_points = concat(mount_half_plan, reverse([for (p = mount_half_plan) [p.x, -p.y]]));
     mount_plan = smooth_path(mount_plan_points, method="corners", relsize=1);
 
     // Get the foil info
@@ -264,33 +245,47 @@ module tail(
     ];
 
     foil_name = (struct_val(FOIL_INFO, "name"))(foil_parameters);
-    //foil_name = "RECT";
-    foil_profile = (struct_val(FOIL_INFO, "profile"))(foil_parameters);
+    foil_surfaces = (struct_val(FOIL_INFO, "surfaces"))(foil_parameters);
 
     // Figure out some foil parameters
-    mean_thickness = polygon_area(foil_profile);
+    mean_thickness = polygon_area(join_surfaces(foil_surfaces));
     square_profile = [[1, -mean_thickness/2],[0, -mean_thickness/2], [0, mean_thickness/2], [1, mean_thickness/2]];
 
     tip_a = acos((min(tip_chord, 0.8 * root_chord)/root_chord)^(plan_form_exponent/2));
 
+    fillet_end = 20;
     // Compute the foil sections
     section_count = 21;
-    sections = [for (i = [section_count:-1:-section_count])
-        let (
-            a = tip_a * i / section_count,
-            s = sign(a) * (abs(sin(a)) / sin(tip_a)) ^ (2/plan_form_exponent),
-            c = sqrt(max(0, 1 - s*s))
-        )
-        [
-            s * span/2,
-            cos(a)^(2/plan_form_exponent) * root_chord,
-            reference_line,
-            angle_of_attack + (1-c) * twist,
-            (1-c) * -droop,
-        ]];
+    half_spans = concat(
+        [for (i = [section_count:-1:0])
+            let (
+                a = tip_a * i / section_count,
+                s = (sin(a) / sin(tip_a)) ^ (2/plan_form_exponent),
+                local_span = s * span / 2
+            )
+            if (local_span > fillet_end) local_span
+        ],
+        [for (z = [fillet_end:-1:1]) z]
+    );
+    spans = concat(half_spans, [0], -reverse(half_spans));
 
-    area = sum([for (i = [0 : len(sections) - 2])
-        (sections[i][0] - sections[i+1][0]) * (sections[i][1] + sections[i+1][1]) / 2]);
+    function chord_at(local_span) =
+        let (s = abs(2 * local_span / span))
+        root_chord * (1 - s^plan_form_exponent * sin(tip_a)^2) ^ (1/plan_form_exponent);
+
+    sections = [for (local_span = spans)
+        let (
+                s = abs(2 * local_span / span),
+                c = sqrt(max(0, 1 - s*s)),
+                local_chord = chord_at(local_span),
+                local_twist = angle_of_attack + (1-c) * twist,
+                local_droop = (1-c) * droop
+            )
+            path3d(wing_section(foil_surfaces, local_chord, reference_line, local_twist, local_droop), local_span)
+        ];
+
+    area = sum([for (i = [0 : len(spans) - 2])
+        (spans[i] - spans[i+1]) * (chord_at(spans[i]) + chord_at(spans[i+1])) / 2]);
     aspect_ratio = span*span/area;
 
     echo(str("\n",
@@ -310,7 +305,7 @@ module tail(
     // If the angle of attack puts the trailing edge above the mount, we need to reach up to it.
     mount_web = concat(
         [for (x = [0:0.5:root_chord-0.1])
-            let (s = -wing_surfaces(x, foil_profile, root_chord, reference_line, angle_of_attack, 0)[1])
+            let (s = -wing_surfaces(x, foil_surfaces, root_chord, reference_line, angle_of_attack, 0)[1])
             [x, s > 0 ? s + 0.05 : 0]],
         [[max([for (p = mount_profile) p[0]]), -0.1], [0, -0.1]]);
 
@@ -319,8 +314,7 @@ module tail(
             down(15) linear_extrude(height=30) union() { polygon(mount_profile); polygon(mount_web); }
             rotate([-90,0,0]) down(50) linear_extrude(height=100) polygon(mount_plan);
         }
-        translate([reference_line*root_chord, 0, 0]) rotate([180,0,0])
-            vnf_polyhedron(wing_vnf(foil_profile, sections));
+        translate([reference_line*root_chord, 0, 0]) rotate([180,0,0]) skin(sections, slices = 0, caps = true);
     }
 
     difference() {
@@ -329,7 +323,7 @@ module tail(
         for (hole = struct_val(MOUNT_INFO, "screw_holes")) {
             y = struct_val(hole, "location");
             size = struct_val(hole, "size");
-            tail_screw_hole(y, size, foil_profile, foil_parameters, mount_web);
+            tail_screw_hole(y, size, foil_surfaces, foil_parameters, mount_web);
         }
 
         if (show_text) {
