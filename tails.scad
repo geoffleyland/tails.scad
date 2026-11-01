@@ -15,7 +15,9 @@ MOUNT = "axis";                 // ["axis"]
 // (mm)
 SPAN = 225;                     // [100:5:280]
 // (mm)
-ROOT_CHORD = 45;                // [20:1:60]
+ROOT_CHORD = 45;                // [20:1:90]
+// (mm)
+TIP_CHORD = 4;                  // [3:1:70]
 FOIL_FAMILY = "NACA-4";         // ["NACA-4"]
 // (Fraction of local chord)
 MAX_THICKNESS = 0.1;            // [0.04:0.005:0.2]
@@ -42,6 +44,7 @@ rotate([0, -90, 0]) rotate([0, 0, -20])
     tail(
         SPAN,
         ROOT_CHORD,
+        tip_chord = TIP_CHORD,
         mount = MOUNT,
         foil_family = FOIL_FAMILY,
         max_thickness = MAX_THICKNESS,
@@ -219,6 +222,7 @@ module tail_screw_hole(y, size, foil_profile, parameters, mount_web) {
 module tail(
     span,
     root_chord,
+    tip_chord               = 4,
     mount                   = "axis",
     foil_family             = "NACA-4",
     max_thickness           = 0.1,
@@ -264,7 +268,26 @@ module tail(
     mean_thickness = polygon_area(foil_profile);
     square_profile = [[1, -mean_thickness/2],[0, -mean_thickness/2], [0, mean_thickness/2], [1, mean_thickness/2]];
 
-    area = PI * root_chord/2 * span/2;
+    tip_a = acos(min(tip_chord, 0.8 * root_chord)/root_chord);
+
+    // Compute the foil sections
+    section_count = 21;
+    sections = [for (i = [section_count:-1:-section_count])
+        let (
+            a = tip_a * i / section_count,
+            s = sin(a) / sin(tip_a),
+            c = sqrt(max(0, 1 - s*s))
+        )
+        [
+            s * span/2,
+            cos(a) * root_chord,
+            reference_line,
+            angle_of_attack + (1-c) * twist,
+            (1-c) * -droop,
+        ]];
+
+    area = sum([for (i = [0 : len(sections) - 2])
+        (sections[i][0] - sections[i+1][0]) * (sections[i][1] + sections[i+1][1]) / 2]);
     aspect_ratio = span*span/area;
 
     echo(str("\n",
@@ -280,15 +303,6 @@ module tail(
         translate([0, -50, 0]) rotate([90, 0, 180]) linear_extrude(height=100)
             text(string, valign="center", size=text_size, font=font);
     }
-
-    // Compute the foil sections
-    sections = [for (a = [85:-5:-85]) [
-        sin(a) * span/2,
-        plan_form == "rect" ? area/span : cos(a) * root_chord,
-        reference_line,
-        angle_of_attack + (1-cos(a)) * twist,
-        (1-cos(a)) * -droop,
-        ]];
 
     // If the angle of attack puts the trailing edge above the mount, we need to reach up to it.
     mount_web = concat(
