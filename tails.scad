@@ -175,33 +175,20 @@ FOILS = [
 function join_surfaces(surfaces) =
     concat(reverse(surfaces[0]), [for (i = [1 : len(surfaces[1]) - 1]) surfaces[1][i]]);
 
-function wing_section(foil_surfaces, chord, centre, twist, droop) =
-    move([0, droop], scale(chord, zrot(twist, move([-centre, 0], join_surfaces(foil_surfaces)))));
+function place_points(points, chord, centre, twist, droop) =
+    move([0, droop], scale(chord, zrot(twist, move([-centre, 0], points))));
 
-function wing_surfaces(y, foil_surfaces, chord, centre, twist, droop) =
-    let (
-        root_section = move([centre * chord, 0], wing_section(foil_surfaces, chord, centre, twist, droop)),
-        zs = [for (seg = polygon_line_intersection(root_section, [[y, -100], [y, 100]])) for (p = seg) p.y]
-        )
-        zs == [] ? [0,0] : [min(zs), max(zs)];
+function wing_section(foil_surfaces, chord, centre, twist, droop) =
+    place_points(join_surfaces(foil_surfaces), chord, centre, twist, droop);
 
 
 //-------------------------------------------------------------------------------------------------
 
-module tail_screw_hole(y, size, foil_surfaces, parameters, mount_web) {
+module tail_screw_hole(y, size, screw_side_at) {
     info = screw_info(size, head="flat");
     head_d = struct_val(info, "head_size_sharp");
     head_r = head_d / 2;
-    root_chord = struct_val(parameters, "root_chord");
-    reference_line = struct_val(parameters, "reference_line");
-    angle_of_attack = struct_val(parameters, "angle_of_attack");
-    z = min(0, min([for (y1 = [y - head_r: 0.5: y + head_r])
-        min(
-            wing_surfaces(y1, foil_surfaces, root_chord, reference_line, angle_of_attack, 0)[0],
-            let (zs = [for (seg = polygon_line_intersection(mount_web, [[y1, -100], [y1, 100]])) for (p = seg) p.y])
-                zs == [] ? 0 : -max(zs)
-        )
-    ]));
+    z = min([for (y1 = [y - head_r: 0.5: y + head_r]) screw_side_at(y1)]);
     right(y) fwd(z) rotate([-90,0,0])
         screw_hole(size, head="flat", length=20, counterbore=1.5, head_oversize=-1, anchor="top");
 }
@@ -238,41 +225,45 @@ module tail(
 
     // Get the foil info
     FOIL_INFO = (struct_val(FOILS, foil_family));
-
     foil_parameters = [
-        ["root_chord",          root_chord],
         ["max_thickness",       max_thickness],
         ["max_camber",          max_camber],
         ["max_camber_position", max_camber_position],
-        ["angle_of_attack",     angle_of_attack],
-        ["reference_line",      reference_line],
         ["point_count",         point_count]
     ];
-
     foil_name = (struct_val(FOIL_INFO, "name"))(foil_parameters);
     foil_surfaces = (struct_val(FOIL_INFO, "surfaces"))(foil_parameters);
 
-    // Figure out some foil parameters
-    mean_thickness = polygon_area(join_surfaces(foil_surfaces));
-    square_profile = [[1, -mean_thickness/2],[0, -mean_thickness/2], [0, mean_thickness/2], [1, mean_thickness/2]];
+    // Set up easy access to the root foil profile.
+    root_surfaces = [for (s = foil_surfaces)
+        move([reference_line * root_chord, 0], place_points(s, root_chord, reference_line, angle_of_attack, 0))];
+    root_surface_tables = [for (s = root_surfaces) sort(s)];
+    function root_surface_at(x, i) =
+        let (table = root_surface_tables[i])
+        x < table[0].x || x > last(table).x ? 0 : lookup(x, table);
+    function foil_mount_side_at(x) = root_surface_at(x, 0);
+    function foil_screw_side_at(x) = root_surface_at(x, 1);
 
-    tip_a = acos((min(tip_chord, 0.8 * root_chord)/root_chord)^(plan_form_exponent/2));
+    // Now we know about the foil, finish off the mount with details on how it joins to the foil.
+    // If the angle of attack puts the trailing edge above the mount, we need to reach up to it
+    // with a web.
+    mount_back = max([for (p = mount_profile) p.x]);
+    mount_web_top = concat(
+        [for (x = [0:0.5:root_chord-0.1])
+            let (s = -foil_mount_side_at(x))
+            [x, s > 0 ? s + 0.05 : 0]],
+        [[mount_back, -0.1]]);
+    mount_web = concat(mount_web_top, [[0, -0.1]]);
+    // Screws might be located at the foil surface or the mount surface.
+    screw_side_at = function(x) min(0, foil_screw_side_at(x), -lookup(x, mount_web_top));
 
-    fillet_end = 20;
     // Compute the foil sections
+    // Compute the ellipse angle we need to get the tip chord.
+    tip_a = acos((min(tip_chord, 0.8 * root_chord)/root_chord)^(plan_form_exponent/2));
     section_count = 21;
-    half_spans = concat(
-        [for (i = [section_count:-1:0])
-            let (
-                a = tip_a * i / section_count,
-                s = (sin(a) / sin(tip_a)) ^ (2/plan_form_exponent),
-                local_span = s * span / 2
-            )
-            if (local_span > fillet_end) local_span
-        ],
-        [for (z = [fillet_end:-1:1]) z]
-    );
-    spans = concat(half_spans, [0], -reverse(half_spans));
+    spans = [for (i = [section_count : -1 : -section_count])
+        let (a = tip_a * i / section_count)
+        sign(a) * (abs(sin(a)) / sin(tip_a)) ^ (2/plan_form_exponent) * span / 2];
 
     function chord_at(local_span) =
         let (s = abs(2 * local_span / span))
@@ -289,9 +280,11 @@ module tail(
             path3d(wing_section(foil_surfaces, local_chord, reference_line, local_twist, local_droop), local_span)
         ];
 
+    // Figure out some foil stats for the log message and what we write on the foil.
     area = sum([for (i = [0 : len(spans) - 2])
         (spans[i] - spans[i+1]) * (chord_at(spans[i]) + chord_at(spans[i+1])) / 2]);
     aspect_ratio = span*span/area;
+    mean_thickness = polygon_area(join_surfaces(foil_surfaces));
 
     echo(str("\n",
         "  shape: ", foil_name, "\n",
@@ -302,17 +295,12 @@ module tail(
         "  mean thickness: ", mean_thickness * area/span, "mm\n"
     ));
 
+    // The geometry modules - text, the tail without holes or text, and then the whole thing
+    // put together.
     module foil_text(string) {
         translate([0, -50, 0]) rotate([90, 0, 180]) linear_extrude(height=100)
             text(string, valign="center", size=text_size, font=font);
     }
-
-    // If the angle of attack puts the trailing edge above the mount, we need to reach up to it.
-    mount_web = concat(
-        [for (x = [0:0.5:root_chord-0.1])
-            let (s = -wing_surfaces(x, foil_surfaces, root_chord, reference_line, angle_of_attack, 0)[1])
-            [x, s > 0 ? s + 0.05 : 0]],
-        [[max([for (p = mount_profile) p[0]]), -0.1], [0, -0.1]]);
 
     module simple_tail() {
         intersection() {
@@ -328,7 +316,7 @@ module tail(
         for (hole = struct_val(MOUNT_INFO, "screw_holes")) {
             y = struct_val(hole, "location");
             size = struct_val(hole, "size");
-            tail_screw_hole(y, size, foil_surfaces, foil_parameters, mount_web);
+            tail_screw_hole(y, size, screw_side_at);
         }
 
         if (show_text) {
