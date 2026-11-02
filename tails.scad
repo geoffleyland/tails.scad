@@ -66,9 +66,14 @@ rotate([0, -90, 0]) rotate([0, 0, -20])
 
 //- MOUNT OPTIONS ---------------------------------------------------------------------------------
 
+// smoothing rounds each corner using half of each neighbouring segment (except for the of the
+// first and last segments, where the whole segment is used), so a corner next to a long first or
+// last edge bends the whole edge. Put an extra point close to the corner on edges that must stay
+// straight (like [1,0] and [33,-10] below). Repeating a point instead leaves that corner, rather
+// than the segment in question flat.
 MOUNTS = [
     ["axis", [
-        ["profile", [[90,0],[0,0],[0,-1],[2,-3.5],[8,-6.5],[15,-8.5],[23,-9.5],[30,-10],[90,-10]] ],
+        ["profile", [[90,0],[1,0],[0,0],[0,-1],[2,-3.5],[8,-6.5],[15,-8.5],[23,-9.5],[30,-10],[33,-10],[90,-10]] ],
         ["half_plan", [[90,1],[70,4.5],[35,10],[23,11],[13,10.5],[7,9],[4.5,8],[2,6.5],[1,4.5],[0,1]] ],
         ["screw_holes", [
             [["location", 23], ["size", "M6"]],
