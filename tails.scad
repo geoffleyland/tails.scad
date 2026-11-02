@@ -35,6 +35,8 @@ PLAN_FORM_EXPONENT = 2.0;       // [1:0.2:10]
 DROOP = 3;                      // [-10:0.5:10]
 // (degrees)
 TWIST = 0;                      // [-10:0.5:10]
+// (Fraction of foil root thickness. 0 means no fillet)
+FILLET_RADIUS_RATIO = 1.0;      // [0.0:0.1:2]
 
 /* [Text] */
 SHOW_TEXT = true;
@@ -57,6 +59,7 @@ rotate([0, -90, 0]) rotate([0, 0, -20])
         plan_form_exponent = PLAN_FORM_EXPONENT,
         droop = DROOP,
         twist = TWIST,
+        fillet_radius_ratio = FILLET_RADIUS_RATIO,
 
         show_text = SHOW_TEXT,
         text_size = TEXT_SIZE,
@@ -66,11 +69,11 @@ rotate([0, -90, 0]) rotate([0, 0, -20])
 
 //- MOUNT OPTIONS ---------------------------------------------------------------------------------
 
-// smoothing rounds each corner using half of each neighbouring segment (except for the of the
-// first and last segments, where the whole segment is used), so a corner next to a long first or
-// last edge bends the whole edge. Put an extra point close to the corner on edges that must stay
-// straight (like [1,0] and [33,-10] below). Repeating a point instead leaves that corner, rather
-// than the segment in question flat.
+// smoot_path rounds each corner using half of each neighbouring segment (except for the first and
+// last segments, where the whole segment is used), so a corner next to a long first or last edge
+// bends the whole edge. Put an extra point close to the corner on edges that must stay straight
+// (like [1,0] and [33,-10] below). Repeating a point instead makes that corner sharp, as opposed
+// to making the segment in question flat.
 MOUNTS = [
     ["axis", [
         ["profile", [[90,0],[1,0],[0,0],[0,-1],[2,-3.5],[8,-6.5],[15,-8.5],[23,-9.5],[30,-10],[33,-10],[90,-10]] ],
@@ -181,15 +184,17 @@ function place_points(points, chord, centre, twist, droop) =
 function wing_section(foil_surfaces, chord, centre, twist, droop) =
     place_points(join_surfaces(foil_surfaces), chord, centre, twist, droop);
 
+function smoothstep(u) = let (v = max(0, min(1, u))) v * v * (3 - 2 * v);
+
 
 //-------------------------------------------------------------------------------------------------
 
-module tail_screw_hole(y, size, screw_side_at) {
+module tail_screw_hole(x, size, screw_side_at) {
     info = screw_info(size, head="flat");
     head_d = struct_val(info, "head_size_sharp");
     head_r = head_d / 2;
-    z = min([for (y1 = [y - head_r: 0.5: y + head_r]) screw_side_at(y1)]);
-    right(y) fwd(z) rotate([-90,0,0])
+    depth = min([for (x1 = [x - head_r: 0.5: x + head_r]) screw_side_at(x1)]);
+    right(x) fwd(depth) rotate([-90,0,0])
         screw_hole(size, head="flat", length=20, counterbore=1.5, head_oversize=-1, anchor="top");
 }
 
@@ -210,6 +215,7 @@ module tail(
     plan_form_exponent      = 2,
     droop                   = 3,
     twist                   = 0,
+    fillet_radius_ratio     = 1,
     show_text               = true,
     text_size               = 3,
     text_depth              = 0.5,
@@ -222,6 +228,13 @@ module tail(
     mount_half_plan = struct_val(MOUNT_INFO, "half_plan");
     mount_plan_points = concat(mount_half_plan, reverse([for (p = mount_half_plan) [p.x, -p.y]]));
     mount_plan = smooth_path(mount_plan_points, method="corners", relsize=1);
+
+    mount_half_width_table = sort([for (p = mount_plan) if (p.y > 0) p]);
+    function mount_half_width_at(x) = lookup(x, mount_half_width_table);
+
+    mount_nose_index = min_index([for (p = mount_profile) p.x]);
+    mount_depth_table = [for (i = [mount_nose_index : len(mount_profile) - 1]) [mount_profile[i].x, -mount_profile[i].y]];
+    function mount_depth_at(x) = lookup(x, mount_depth_table);
 
     // Get the foil info
     FOIL_INFO = (struct_val(FOILS, foil_family));
@@ -237,12 +250,16 @@ module tail(
     // Set up easy access to the root foil profile.
     root_surfaces = [for (s = foil_surfaces)
         move([reference_line * root_chord, 0], place_points(s, root_chord, reference_line, angle_of_attack, 0))];
-    root_surface_tables = [for (s = root_surfaces) sort(s)];
+    root_camber_line = (root_surfaces[0] + root_surfaces[1]) / 2;
+    root_surface_tables = [for (s = concat(root_surfaces, [root_camber_line])) sort(s)];
     function root_surface_at(x, i) =
         let (table = root_surface_tables[i])
         x < table[0].x || x > last(table).x ? 0 : lookup(x, table);
     function foil_mount_side_at(x) = root_surface_at(x, 0);
     function foil_screw_side_at(x) = root_surface_at(x, 1);
+    function camber_line_at(x) = root_surface_at(x, 2);
+    foil_front = root_surface_tables[2][0].x;
+    foil_back = last(root_surface_tables[2]).x;
 
     // Now we know about the foil, finish off the mount with details on how it joins to the foil.
     // If the angle of attack puts the trailing edge above the mount, we need to reach up to it
@@ -256,6 +273,31 @@ module tail(
     mount_web = concat(mount_web_top, [[0, -0.1]]);
     // Screws might be located at the foil surface or the mount surface.
     screw_side_at = function(x) min(0, foil_screw_side_at(x), -lookup(x, mount_web_top));
+
+    // Add a fillet from the mount to the foil.
+    fillet_radius = fillet_radius_ratio * max_thickness * root_chord;
+    fillet_lead_in = 0.33;
+    fillet_lead_out = 0.5;
+    fillet_points = 24;
+    fillet_overlap = 0.05;
+
+    function fillet_layer(x) =
+        let (
+            foil_mount_side = foil_mount_side_at(x),
+            camber_line = camber_line_at(x),
+            mount_half_width = mount_half_width_at(x),
+            taper = min(smoothstep((x - foil_front) / (fillet_lead_in * root_chord)),
+                        smoothstep((foil_back - x) / (fillet_lead_out * root_chord))),
+            radius = max(0.01, min(mount_depth_at(x) - foil_mount_side, fillet_radius * taper)),
+            arc = [for (j = [0 : fillet_points])
+                let (a = 90 * j / fillet_points)
+                // `camber_line + 0.01` stops the fillet from poking out the screw-side of the foil.
+                [mount_half_width + radius * (1 - cos(a)), max(camber_line + 0.01, foil_mount_side + radius * (1 - sin(a)) - fillet_overlap)]],
+            outline = concat(arc, [[mount_half_width + radius, camber_line], [0, camber_line], [0, arc[0].y]])
+        )
+        [for (p = outline) [x, -p.y, p.x]];
+
+    fillet_layers = [for (x = [foil_front + 0.25 : 0.5 : foil_back - 0.25]) fillet_layer(x)];
 
     // Compute the foil sections
     // Compute the ellipse angle we need to get the tip chord.
@@ -272,10 +314,10 @@ module tail(
     sections = [for (local_span = spans)
         let (
                 s = abs(2 * local_span / span),
-                c = sqrt(max(0, 1 - s*s)),
                 local_chord = chord_at(local_span),
-                local_twist = angle_of_attack + (1-c) * twist,
-                local_droop = (1-c) * droop
+                twist_and_droop_fraction = 1 - sqrt(max(0, 1 - s*s)),
+                local_twist = angle_of_attack + twist_and_droop_fraction * twist,
+                local_droop = twist_and_droop_fraction * droop
             )
             path3d(wing_section(foil_surfaces, local_chord, reference_line, local_twist, local_droop), local_span)
         ];
@@ -308,15 +350,17 @@ module tail(
             rotate([-90,0,0]) down(50) linear_extrude(height=100) polygon(mount_plan);
         }
         translate([reference_line*root_chord, 0, 0]) rotate([180,0,0]) skin(sections, slices = 0, caps = true);
+        if (fillet_radius > 0)
+            for (m = [0, 1]) mirror([0, 0, m]) skin(fillet_layers, slices = 0, caps = true);
     }
 
     difference() {
         simple_tail();
 
         for (hole = struct_val(MOUNT_INFO, "screw_holes")) {
-            y = struct_val(hole, "location");
+            x = struct_val(hole, "location");
             size = struct_val(hole, "size");
-            tail_screw_hole(y, size, screw_side_at);
+            tail_screw_hole(x, size, screw_side_at);
         }
 
         if (show_text) {
