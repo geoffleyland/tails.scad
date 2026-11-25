@@ -40,7 +40,10 @@ You need access to a printer and someone who knows how to use it and drive the s
 * Play.
 
 ### Option 3: Use [MakerWorld](https://makerworld.com/en)
-I'll put a link here once I've got that sorted.
+* Go to [tails.scad on MakerWorld](https://makerworld.com/en/models/3685506-tails-scad)
+* Customise your tail.
+* It's probably best not to print directly from your phone, you can't change the print settings.
+* Instead download the STL it generates, and print it with lots of wall loops and strong support.
 
 
 ## Printing
